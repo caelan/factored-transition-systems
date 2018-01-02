@@ -126,21 +126,41 @@ SEARCH_OPTIONS = {
     'dijkstra': '--heuristic "h=blind(transform=adapt_costs(cost_type=PLUSONE))" '
                 '--search "astar(h,max_time=%s,bound=%s)"',
     'max_astar': '--heuristic "h=hmax(transform=adapt_costs(cost_type=PLUSONE))" '
-    '--search "astar(h,max_time=%s,bound=%s)"',
+                 '--search "astar(h,max_time=%s,bound=%s)"',
+
     'count_lazy': '--heuristic "h=goalcount(transform=adapt_costs(cost_type=PLUSONE))" '
-                 '--search "lazy_greedy([h],boost=1000,max_time=%s,bound=%s)"',
+                  '--search "lazy_greedy([h],boost=1000,max_time=%s,bound=%s)"',
+
     'cea_astar': '--heuristic "h=cea(transform=adapt_costs(cost_type=PLUSONE))" '
     '--search "astar(h,max_time=%s,bound=%s)"',
     'cea_eager': '--heuristic "h=cea(transform=adapt_costs(cost_type=PLUSONE))" '
     '--search "eager_greedy([h],preferred=[h],boost=1000,max_time=%s,bound=%s)"',
     'cea_lazy': '--heuristic "h=cea(transform=adapt_costs(cost_type=PLUSONE))" '
-    '--search "lazy_greedy([h],preferred=[h],boost=1000,max_time=%s,bound=%s)"',
+    '--search "lazy_greedy([h],preferred=[h],preferred_successors_first=true,boost=1000,max_time=%s,bound=%s)"',
+
     'ff_astar': '--heuristic "h=ff(transform=adapt_costs(cost_type=PLUSONE))" '
                 '--search "astar(h,max_time=%s,bound=%s)"',
     'ff_eager': '--heuristic "h=ff(transform=adapt_costs(cost_type=PLUSONE))" '
                  '--search "eager_greedy([h],preferred=[h],boost=1000,max_time=%s,bound=%s)"',
     'ff_lazy': '--heuristic "h=ff(transform=adapt_costs(cost_type=PLUSONE))" '
-                '--search "lazy_greedy([h],preferred=[h],boost=1000,max_time=%s,bound=%s)"',
+                '--search "lazy_greedy([h],preferred=[h],preferred_successors_first=true,boost=1000,max_time=%s,bound=%s)"',
+
+
+
+
+    'ff_lazy_no_pref': '--heuristic "h=ff(transform=adapt_costs(cost_type=PLUSONE))" '
+               '--search "lazy_greedy([h],max_time=%s,bound=%s)"',
+    'ff_eager_no_pref': '--heuristic "h=ff(transform=adapt_costs(cost_type=PLUSONE))" '
+                        '--search "eager_greedy([h],max_time=%s,bound=%s)"',
+    'ff_wastar5': '--heuristic "h=ff(transform=adapt_costs(cost_type=PLUSONE))" '
+    '--search "lazy_wastar([h],reopen_closed=false,boost=1000,'
+    'w=5,randomize_successors=false,preferred_successors_first=true,'
+    'random_seed=-1,cost_type=NORMAL,max_time=%s,bound=%s)"',
+    'ff_wastar2': '--heuristic "h=ff(transform=adapt_costs(cost_type=PLUSONE))" '
+                  '--search "lazy_wastar([h],reopen_closed=false,boost=1000,w=2,max_time=%s,bound=%s)"',
+
+    'h2_lazy': '--heuristic "h=hm(m=2,transform=adapt_costs(cost_type=PLUSONE))" '
+               '--search "lazy_greedy([h],preferred=[h],boost=1000,max_time=%s,bound=%s)"',
 }
 
 

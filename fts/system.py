@@ -157,6 +157,36 @@ class ConstraintTypeConstants(ConstraintType):
 
 Equal = ConstraintTypeConstants(name='Equal')
 Value = ConstraintTypeConstants(name='Value')
+Difference = ConstraintTypeConstants(name='Difference')
+Quotient = ConstraintTypeConstants(name='Quotient')
+
+
+class Clause(object):
+
+    def __init__(self, constraints):
+        self.constraints = constraints
+
+    def get_constraints(self, variables):
+        return self.constraints
+
+
+class SparseClause(Clause):
+
+    def __init__(self, constraints, changed_vars=tuple()):
+        super(SparseClause, self).__init__(constraints)
+        self.changed_vars = changed_vars
+
+    def get_constraints(self, state_vars):
+        unchanged_constraints = []
+        changed_vars = set(self.changed_vars)
+        for constraint in self.constraints:
+            for param in constraint.parameters:
+                if isinstance(param, Parameter) and (param.set == nX):
+                    changed_vars.add(param.var)
+        for var in state_vars:
+            if var not in changed_vars:
+                unchanged_constraints.append(unchanged(var))
+        return self.constraints + unchanged_constraints
 
 
 class FTSProblem(object):
@@ -165,9 +195,23 @@ class FTSProblem(object):
                  cost_fn=None):
         self.initial_state = initial_state
         self.goal_clause = goal_clause
-        self.transitions = transitions
+        self.transitions = []
+        for clause in transitions:
+            if isinstance(clause, Clause):
+                self.transitions.append(
+                    clause.get_constraints(self.state_vars))
+            else:
+                self.transitions.append(clause)
         self.samplers = samplers
         self.cost_fn = cost_fn
+
+    @property
+    def state_vars(self):
+        return self.initial_state.keys()
+
+    @property
+    def control_vars(self):
+        raise NotImplementedError()
 
     def __repr__(self):
         return 'Initial: {}\n'               'Goal: {}\n'               'Transition: {}\n'               'Samplers: {}'.format(self.initial_state, self.goal_clause,
@@ -182,3 +226,19 @@ def rename_constraints(assignments):
 
 def unchanged(var):
     return Equal(X[var], nX[var])
+
+
+def increase(var, amount):
+    return Difference(nX[var], X[var], amount)
+
+
+def decrease(var, amount):
+    return Difference(X[var], nX[var], amount)
+
+
+def scale(var, amount):
+    return Quotient(nX[var], X[var], amount)
+
+
+def shrink(var, amount):
+    return Quotient(X[var], nX[var], amount)

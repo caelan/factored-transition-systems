@@ -34,12 +34,16 @@ class ActionInstance(Instance):
         self.arguments = tuple(arguments)
         self.constraints = tuple(constraints)
         self.derived = tuple(derived)
-        self.conditions = copy.copy(conditions)
         self.preconditions = conditions
         self.effects = effects
         self.cost = cost
+
+    @property
+    def conditions(self):
+        conditions = copy.copy(self.preconditions)
         for derived in self.derived:
-            self.conditions[derived] = True
+            conditions[derived] = True
+        return conditions
 
     def apply(self, state):
         new_state = copy.copy(state)
@@ -59,13 +63,15 @@ class ActionInstance(Instance):
 
 class AxiomInstance(Instance):
 
-    def __init__(self, lifted, arguments, constraints, conditions, derived):
+    def __init__(self, lifted, value_from_arg):
         self.lifted = lifted
-        self.arguments = tuple(arguments)
-        self.constraints = tuple(constraints)
-        self.conditions = conditions
-        self.derived = derived
-        self.var, self.val = derived, True
+        self.arguments = tuple(value_from_arg[arg] for arg in lifted.arguments)
+        self.constraints = (lifted.constraint.replace(value_from_arg),)
+        self.conditions = {var: get_dict(value_from_arg, arg)
+                           for var, arg in lifted.conditions.items()}
+        self.derived = lifted.derived.replace(value_from_arg)
+        self.var = self.derived
+        self.val = self.lifted.value
 
     def __repr__(self):
         return 'Axiom({},{})'.format(self.conditions, {self.var: self.val})
@@ -188,16 +194,11 @@ class Axiom(object):
             name='Der-{}'.format(constraint.constraint_type.name))
         self.derived = derived_type(
             *(self.arguments[i] for i in control_indices))
+        self.value = True
 
     def get_instances(self, constraint_values):
         for value_from_arg in satisfying_values([self.constraint], constraint_values):
-            values = [value_from_arg[arg] for arg in self.arguments]
-            element = self.constraint.replace(value_from_arg)
-            assert element in constraint_values[element.constraint]
-            conditions = {var: get_dict(value_from_arg, arg)
-                          for var, arg in self.conditions.items()}
-            derived = self.derived.replace(value_from_arg)
-            yield AxiomInstance(self, values, [element], conditions, derived)
+            yield AxiomInstance(self, value_from_arg)
 
     """
     def identifier(self):
@@ -214,8 +215,8 @@ class Axiom(object):
     """
 
     def __repr__(self):
-        return '<{}, {}, {}, {}>'.format(self.arguments, self.constraint,
-                                         self.conditions, self.derived)
+        return '<{}, {}, {}, {}, {}>'.format(self.arguments, self.constraint,
+                                             self.conditions, self.derived, self.value)
 
 
 class Action(object):
@@ -267,10 +268,13 @@ class SASProblem(object):
         self.derived_vars = set()
 
         self.initial = copy.copy(initial)
+
         self.actions = actions
         for action in self.actions:
+
             for var, val in (action.conditions.items() + action.effects.items()):
                 self._add_val(var, val)
+
         self.axioms = axioms
         self.axiom_from_derived = defaultdict(list)
         for axiom in self.axioms:
@@ -278,7 +282,7 @@ class SASProblem(object):
             for var, val in axiom.conditions.items():
                 self._add_val(var, val)
             self.derived_vars.add(axiom.var)
-            self.initial[axiom.var] = False
+            self.initial[axiom.var] = not axiom.val
             self._add_val(axiom.var, axiom.val)
         self.goal = goal
         for var, val in (self.initial.items() + self.goal.items()):

@@ -1,4 +1,4 @@
-from fts.incremental import SampleSpace, update_plan
+from fts.negative_incremental import SampleSpace, update_plan
 from heapq import heappush, heappop
 from fts.algorithms import GOAL_VAR, get_cost, get_controls, print_plan
 
@@ -6,9 +6,9 @@ from fts.algorithms import transform_goal
 from itertools import product
 from collections import namedtuple
 
-from fts.sas import SASProblem
-from fts.system import Value, Parameter, C, Equal
-from fts.downward import solve_sas, goal_serialization
+from fts.sas import SASProblem, AxiomInstance
+from fts.system import Value, Parameter, I, C, Equal
+from fts.downward import solve_sas
 from fts.samplers import LazySample
 
 from collections import defaultdict
@@ -17,9 +17,7 @@ import time
 Node = namedtuple('Node', ['generator', 'effort'])
 
 INF = float('inf')
-
 EFFORT_OPERATOR = sum
-ADVANCED_TESTS = False
 
 
 class LazySampleSpace(object):
@@ -36,10 +34,14 @@ class LazySampleSpace(object):
 
         self.test_constraints = set()
         for sampler in space.problem.samplers:
-            if not sampler.is_simple_test():
-                continue
-            for constraint in sampler.get_constraints():
-                self.test_constraints.add(constraint)
+
+            if sampler.is_simple_test():
+                for constraint in sampler.get_constraints():
+                    self.test_constraints.add(constraint)
+
+        for axiom in self.space.axioms:
+            if axiom.constraint.constraint in self.test_constraints:
+                axiom.value = False
 
         self.node_from_element = {}
         for generator in space.generators:
@@ -53,15 +55,33 @@ class LazySampleSpace(object):
                 self._add_constraint(element, None, 0)
         self.sample_priority_queue()
 
+    def _get_test_generator(self, element):
+        for sampler in self.space.problem.samplers:
+            for constraint in sampler.get_constraints():
+                if constraint == element.constraint:
+                    [out_element] = sampler.constraints
+                    val_from_param = dict(
+                        zip(out_element.parameters, element.parameters))
+                    inp_values = tuple(
+                        val_from_param[I[i]] for i in xrange(len(sampler.inputs)))
+                    generator = sampler(inp_values)
+                    generator.lazy_output_list = [tuple()]
+                    return generator
+        raise RuntimeError()
+
     def retrace_generators(self, instance, generators):
         for element in instance.get_domain():
-            generator = self.node_from_element[element].generator
+            if element in self.node_from_element:
+                generator = self.node_from_element[element].generator
+            else:
+                generator = self._get_test_generator(element)
             if (generator is not None) and (generator not in generators):
 
                 self.retrace_generators(generator, generators)
                 generators.append(generator)
 
     def set_cost(self, action_instance):
+
         if GOAL_VAR in action_instance.effects:
             action_instance.cost = 0
         elif self.space.problem.cost_fn is None:
@@ -73,31 +93,35 @@ class LazySampleSpace(object):
         assert effort <= self.max_effort
         action_instance.cost += self.effort_weight * effort
 
+    def get_axiom_instances(self):
+        self.axiom_from_derived = defaultdict(list)
+        for axiom in self.space.axioms:
+            values = self.space.negative_values if (
+                axiom.constraint.constraint in self.test_constraints) else self.constraint_values
+            for instance in axiom.get_instances(values):
+                self.axiom_from_derived[instance.derived].append(instance)
+                yield instance
+
     def get_action_instances(self):
 
         for action in self.space.actions:
             for instance in action.get_instances(self.constraint_values):
-                if ADVANCED_TESTS:
-                    new_derived = []
-
-                    for ax, d in zip(instance.lifted.axioms, instance.derived):
-                        if ax.constraint.constraint in self.test_constraints and not any(isinstance(v, LazySample) for v in d.parameters):
-                            new_derived.append(d)
-                    instance.derived = new_derived
-                else:
-                    if not all(d in self.axiom_from_derived for d in instance.derived):
-                        continue
+                new_derived = []
+                for axiom, derived in zip(instance.lifted.axioms, instance.derived):
+                    if axiom.value and derived not in self.axiom_from_derived:
+                        new_derived = None
+                        break
+                    elif not axiom.value and derived not in self.axiom_from_derived:
+                        pass
+                    else:
+                        new_derived.append(derived)
+                if new_derived is None:
+                    continue
+                instance.old_derived = instance.derived
+                instance.derived = new_derived
                 self.set_cost(instance)
-                yield instance
-
-    def get_axiom_instances(self):
-
-        self.axiom_from_derived = defaultdict(list)
-        for axiom in self.space.axioms:
-
-            for instance in axiom.get_instances(self.constraint_values):
-                self.axiom_from_derived[instance.derived].append(instance)
-                yield instance
+                if instance.cost < INF:
+                    yield instance
 
     def get_sas_problem(self):
         axiom_instances = list(self.get_axiom_instances())
@@ -135,7 +159,7 @@ class LazySampleSpace(object):
 
     def _update_generators(self, element):
         for sampler, i in self.space.samplers_from_constraint[element.constraint]:
-            if ADVANCED_TESTS and sampler.is_simple_test():
+            if sampler.is_simple_test():
                 continue
             values = [self.constraint_values.get(c, []) if i != j else [element]
                       for j, c in enumerate(sampler.domain_constraints)]
@@ -177,16 +201,14 @@ class LazySampleSpace(object):
     def _get_plan_instances(self, solution):
         states = [self.space.initial]
         for action_instance in solution:
-
-            for atom in action_instance.derived:
-                for axiom_instance in self.axiom_from_derived[atom]:
-                    if axiom_instance.is_applicable(states[-1]):
-                        yield axiom_instance
-                        break
-                else:
-                    raise RuntimeError('No supporting axioms!')
+            for axiom, derived in zip(action_instance.lifted.axioms, action_instance.old_derived):
+                value_from_arg = {}
+                for var, arg in axiom.conditions.items():
+                    value_from_arg[arg] = states[-1][var]
+                for arg, value in zip(axiom.derived.parameters, derived.parameters):
+                    value_from_arg[arg] = value
+                yield AxiomInstance(axiom, value_from_arg)
             yield action_instance
-
             states.append(action_instance.apply(states[-1]))
 
     def get_plan_generators(self, solution):
@@ -205,6 +227,7 @@ def sample_initial(space, generators, max_calls):
     assert first_generators
     sampled_generators = []
     for generator in first_generators:
+        print generator
         assert not generator.greedy
         if max_calls <= len(sampled_generators):
             break
@@ -243,17 +266,18 @@ def sample_dag(space, generators, greedy, max_list, max_layers=INF):
     return sampled_generators
 
 
-def focused(fts_problem, max_time=INF, search_options='ff_lazy', max_search_time=10, effort_weight=10, max_constraints=1,
-            single_layer=False, max_samplers=INF, test_feasible=False, greedy=True, debug=True):
+def negative_focused(fts_problem, max_time=INF, search_options='ff_lazy', max_search_time=10, effort_weight=1, max_constraints=1,
+                     single_layer=False, max_samplers=INF, test_feasible=False, greedy=True, debug=True):
     assert greedy or (effort_weight == 0)
 
     initial, goal, clauses = transform_goal(fts_problem)
     space = SampleSpace(initial, goal, clauses, fts_problem,
                         max_constraints=max_constraints)
-    space.epochs += 1
+    space.epochs = 1
     best_plan = None
     blocked_generators = set()
 
+    success_search_time = 0
     while (time.time() - space.start_time) <= max_time:
         space.iterations += 1
 
@@ -274,8 +298,11 @@ def focused(fts_problem, max_time=INF, search_options='ff_lazy', max_search_time
         search_time = max_time - (time.time() - space.start_time)
         if blocked_generators:
             search_time = min(search_time, max_search_time)
+        t0 = time.time()
         solution = solve_sas(sas_problem, options=search_options,
                              max_time=search_time, max_cost=get_cost(best_plan))
+        if solution:
+            success_search_time += (time.time() - t0)
 
         if solution is None:
             if not blocked_generators:
@@ -306,6 +333,9 @@ def focused(fts_problem, max_time=INF, search_options='ff_lazy', max_search_time
                 space, generators, greedy=False, max_list=max_samplers)
         if debug:
             print sampled_generators
+        assert sampled_generators
         blocked_generators.update(sampled_generators)
+
+    print 'Average search time:', success_search_time / space.iterations
 
     return get_controls(best_plan)

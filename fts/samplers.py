@@ -3,8 +3,14 @@ from fts.system import Value, C, I, O, Constraint, Parameter
 
 class LazySample(object):
 
+    def __init__(self, sampler, inputs, var):
+        self.sampler = sampler
+        self.inputs = inputs
+        self.var = var
+
     def __repr__(self):
-        return self.__class__.__name__
+
+        return '?{}'.format(self.var)
 
 
 class Generator(object):
@@ -16,6 +22,8 @@ class Generator(object):
         self.generator = None
         self.exhausted = False
         self.calls = 0
+        self.lazy_outputs = tuple(LazySample(
+            sampler, self.input_values, var) for var in self.sampler.outputs)
 
     @property
     def greedy(self):
@@ -44,7 +52,7 @@ class Generator(object):
     def lazy_next(self):
         if self.exhausted:
             return [], []
-        output_values = tuple(LazySample() for _ in self.sampler.outputs)
+        output_values = self.sampler.lazy_outputs if self.sampler.shared else self.lazy_outputs
         return [output_values], self.prepare_atoms(output_values)
 
     def next(self, **kwargs):
@@ -76,6 +84,19 @@ class Generator(object):
                                        [c.constraint.constraint_type for c in self.sampler.constraints])
 
 
+class Function(Generator):
+
+    def next(self, **kwargs):
+        assert not self.exhausted
+        self.calls += 1
+        output_list = list(self.sampler.function_fn(*self.input_values))
+        element_list = []
+        for output_values in output_list:
+            element_list += self.prepare_atoms(output_values)
+        self.exhausted = True
+        return output_list, element_list
+
+
 class AdvancedGenerator(Generator):
 
     def next(self, **kwargs):
@@ -96,14 +117,18 @@ class AdvancedGenerator(Generator):
 class SamplerInterface(object):
     GenClass = None
 
-    def __init__(self, inputs, domain, outputs, constraints, greedy=False, effort=1):
+    def __init__(self, inputs, domain, outputs, constraints, greedy=False, effort=1, shared=False, order=0):
         self.inputs = tuple(inputs)
         self.domain = tuple(domain)
         self.outputs = tuple(outputs)
         self.constraints = tuple(constraints)
         self.greedy = greedy
         self.effort = effort
+        self.shared = shared
+        self.order = order
         self.generators = {}
+        self.lazy_outputs = tuple(LazySample(self, None, var)
+                                  for var in self.outputs)
 
         self._check_valid()
         self._initialize_domain()
@@ -163,6 +188,29 @@ class SamplerInterface(object):
         constraint = Constraint(atom.constraint.constraint_type, variables)
         return constraint(*arguments)
 
+    def is_simple_test(self):
+
+        return (not self.domain) and isinstance(self, Test) and (not self.outputs)
+
+    def get_constraints(self):
+
+        constraints = []
+        for element in self.constraints:
+            variables = []
+            for i, param in enumerate(element.parameters):
+                if isinstance(param, Parameter):
+                    if param.set == I:
+                        variables.append(self.inputs[param.var])
+                    elif param.set == O:
+                        variables.append(self.outputs[param.var])
+                    else:
+                        raise ValueError(param)
+                else:
+                    variables.append(element.constraint.variables[i])
+            constraints.append(Constraint(
+                element.constraint.constraint_type, variables))
+        return constraints
+
     def __call__(self, input_values, **kwargs):
         input_values = tuple(input_values)
         if input_values not in self.generators:
@@ -193,14 +241,22 @@ class AdvancedSampler(SamplerInterface):
         self.generator_fn = generator_fn
 
 
-class Test(Sampler):
+class FunctionSampler(SamplerInterface):
+    GenClass = Function
+
+    def __init__(self, inputs, domain, outputs, constraints, function_fn, **kwargs):
+        super(FunctionSampler, self).__init__(
+            inputs, domain, outputs, constraints, **kwargs)
+        self.function_fn = function_fn
+
+
+class Test(FunctionSampler):
 
     def __init__(self, inputs, domain, constraints, test_fn, **kwargs):
-        def generator_fn(*args):
-            if test_fn(*args):
-                yield [tuple()]
+        def function_fn(*args):
+            return [tuple()] if test_fn(*args) else []
         super(Test, self).__init__(inputs, domain,
-                                   [], constraints, generator_fn, **kwargs)
+                                   [], constraints, function_fn, **kwargs)
 
 
 class Constants(AdvancedSampler):
@@ -210,3 +266,71 @@ class Constants(AdvancedSampler):
             yield constraints
         super(Constants, self).__init__([], [], [],
                                         [], generator_fn, greedy=True, **kwargs)
+
+
+import numbers
+
+neg_inf_fn = lambda *args: -float('inf')
+zero_fn = lambda *args: 0
+pos_inf_fn = lambda *args: float('inf')
+false_fn = lambda *args: False
+true_fn = lambda *args: True
+
+
+class Interval(object):
+
+    def __init__(self, a, b):
+        pass
+
+
+class Singleton(object):
+
+    def __init__(self, a, b):
+        pass
+
+
+class RealFunction(object):
+
+    def __init__(self, inputs, func, eval_fn, domain=tuple(),
+                 lower_fn=neg_inf_fn, upper_fn=pos_inf_fn,
+                 **kwargs):
+        self.inputs = inputs
+        self.func = func
+        self.eval_fn = eval_fn
+        self.domain = domain
+        self.lower_fn = lower_fn
+        self.upper_fn = upper_fn
+
+    def call(self, *values, **kwargs):
+        value = self.eval_fn()
+        assert isinstance(value, numbers.Real)
+        return value
+
+
+class NonNegFunction(RealFunction):
+
+    def __init__(self, inputs, func, eval_fn, domain=tuple(),
+                 lower_fn=zero_fn, upper_fn=pos_inf_fn, **kwargs):
+        pass
+
+
+class BooleanFunction(RealFunction):
+
+    def __init__(self, bound_fn, **kwargs):
+        super(BooleanFunction, self).__init__()
+
+    def call(self, *args, **kwargs):
+        value = self.eval_fn()
+        assert value in (False, True)
+        return value
+
+
+class FiniteFunction(RealFunction):
+    pass
+
+
+class Relation(object):
+
+    def __init__(self, inputs, relation, gen_fn, domain=tuple(),
+                 **kwargs):
+        pass
